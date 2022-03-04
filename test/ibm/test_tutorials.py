@@ -12,31 +12,33 @@
 
 """Tests for the tutorials, copied from ``qiskit-iqx-tutorials``."""
 
-from unittest import skipIf
-import os
 import glob
+import os
 import warnings
-
-from qiskit.test.decorators import TEST_OPTIONS
+from unittest import skipIf
 
 import nbformat
 from nbconvert.preprocessors import ExecutePreprocessor
+from qiskit.test.decorators import TEST_OPTIONS
 
-from qiskit_ibm.utils.utils import to_python_identifier
-
+from qiskit_ibm_provider.utils.utils import to_python_identifier
 from ..ibm_test_case import IBMTestCase
 
-TUTORIAL_PATH = 'docs/tutorials/**/*.ipynb'
+TUTORIAL_PATH = "docs/tutorials/**/*.ipynb"
 
 
 class TutorialsTestCaseMeta(type):
     """Metaclass that dynamically appends a "test_TUTORIAL_NAME" method to the class."""
-    def __new__(mcs, name, bases, dict_):
 
+    def __new__(
+        mcs, name, bases, dict_
+    ):  # pylint: disable=bad-mcs-classmethod-argument
         def create_test(filename):
             """Return a new test function."""
+
             def test_function(self):
                 self._run_notebook(filename)
+
             return test_function
 
         tutorials = sorted(glob.glob(TUTORIAL_PATH, recursive=True))
@@ -46,26 +48,27 @@ class TutorialsTestCaseMeta(type):
             test_name = "test_%s" % to_python_identifier(filename)
             dict_[test_name] = create_test(filename)
             dict_[test_name].__doc__ = 'Test tutorial "%s"' % filename
-        return type.__new__(mcs, name, bases, dict_)
+        return type.__new__(
+            mcs, name, bases, dict_
+        )  # pylint: disable=bad-mcs-classmethod-argument
 
 
-@skipIf(not TEST_OPTIONS['run_slow'], 'Skipping slow tests.')
+@skipIf(not TEST_OPTIONS["run_slow"], "Skipping slow tests.")
 class TestTutorials(IBMTestCase, metaclass=TutorialsTestCaseMeta):
     """Tests for tutorials."""
 
     @staticmethod
     def _run_notebook(filename):
         # Create the preprocessor.
-        execute_preprocessor = ExecutePreprocessor(timeout=6000, kernel_name='python3')
+        execute_preprocessor = ExecutePreprocessor(timeout=6000, kernel_name="python3")
 
         # Open the notebook.
         file_path = os.path.dirname(os.path.abspath(filename))
-        with open(filename) as file_:
+        with open(filename, encoding="utf-8") as file_:
             notebook = nbformat.read(file_, as_version=4)
 
         with warnings.catch_warnings():
             # Silence some spurious warnings.
-            warnings.filterwarnings('ignore', category=DeprecationWarning)
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
             # Finally, run the notebook.
-            execute_preprocessor.preprocess(notebook,
-                                            {'metadata': {'path': file_path}})
+            execute_preprocessor.preprocess(notebook, {"metadata": {"path": file_path}})

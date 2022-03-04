@@ -28,14 +28,14 @@
 
 import os
 from functools import wraps
+from typing import Tuple
 from unittest import SkipTest
-from typing import Optional
 
 from qiskit.test.testing_options import get_test_options
-from qiskit_ibm import least_busy
-from qiskit_ibm import IBMProvider
-from qiskit_ibm.credentials import (Credentials,
-                                    discover_credentials)
+
+from qiskit_ibm_provider import IBMProvider
+from qiskit_ibm_provider import least_busy
+from qiskit_ibm_provider.credentials import Credentials, discover_credentials
 
 
 def requires_qe_access(func):
@@ -58,26 +58,23 @@ def requires_qe_access(func):
     Returns:
         callable: the decorated function.
     """
+
     @wraps(func)
     def _wrapper(obj, *args, **kwargs):
-        if get_test_options()['skip_online']:
-            raise SkipTest('Skipping online tests')
-
+        if get_test_options()["skip_online"]:
+            raise SkipTest("Skipping online tests")
         credentials = _get_credentials()
-        kwargs.update({'qe_token': credentials.token,
-                       'qe_url': credentials.url})
-
+        kwargs.update({"qe_token": credentials.token, "qe_url": credentials.url})
         return func(obj, *args, **kwargs)
 
     return _wrapper
 
 
 def requires_providers(func):
-    """Decorator that signals the test uses the online API, via a public and premium provider.
+    """Decorator that signals the test uses the online API, via a public and premium hgp.
 
-    This decorator delegates into the `requires_qe_access` decorator, but
-    instead of the credentials it appends a dictionary, containing the open access project
-    `public_provider` and a `premium_provider`, to the decorated function.
+    This decorator delegates into the `requires_qe_access` decorator and appends a provider,
+    an open access hub/group/project and a premium hub/group/project to the decorated function.
 
     Args:
         func (callable): Test function to be decorated.
@@ -85,35 +82,76 @@ def requires_providers(func):
     Returns:
         callable: The decorated function.
     """
+
     @wraps(func)
     @requires_qe_access
     def _wrapper(*args, **kwargs):
-        qe_token = kwargs.pop('qe_token')
-        qe_url = kwargs.pop('qe_url')
-
-        # Get the open access project public provider.
-        public_provider = IBMProvider(qe_token, qe_url)
-        # Get a premium provider.
-        premium_provider = _get_custom_provider(qe_token, qe_url)
-
-        if premium_provider is None:
-            raise SkipTest('Requires both the public provider and a premium provider.')
-
-        kwargs.update({
-            'providers': {'public_provider': public_provider,
-                          'premium_provider': premium_provider}
-        })
-
+        qe_token = kwargs.pop("qe_token")
+        qe_url = kwargs.pop("qe_url")
+        provider = IBMProvider(qe_token, qe_url)
+        # Get open access hgp
+        open_hgp = provider._get_hgp()
+        # Get a premium hgp
+        premium_hub, premium_group, premium_project = _get_custom_hgp()
+        if not all([premium_hub, premium_group, premium_project]):
+            raise SkipTest(
+                "Requires both the open access and premium hub/group/project."
+            )
+        kwargs.update(
+            {
+                "provider": provider,
+                "hgps": {
+                    "open_hgp": {
+                        "hub": open_hgp.credentials.hub,
+                        "group": open_hgp.credentials.group,
+                        "project": open_hgp.credentials.project,
+                    },
+                    "premium_hgp": {
+                        "hub": premium_hub,
+                        "group": premium_group,
+                        "project": premium_project,
+                    },
+                },
+            }
+        )
         return func(*args, **kwargs)
 
     return _wrapper
 
 
 def requires_provider(func):
-    """Decorator that signals the test uses the online API, via a provider.
+    """Decorator that signals the test uses the online API, via a custom hub/group/project.
 
     This decorator delegates into the `requires_qe_access` decorator, but
     instead of the credentials it appends a `provider` argument to the decorated
+    function. It also appends the custom `hub`, `group` and `project` arguments.
+
+    Args:
+        func (callable): test function to be decorated.
+
+    Returns:
+        callable: the decorated function.
+    """
+
+    @wraps(func)
+    @requires_qe_access
+    def _wrapper(*args, **kwargs):
+        token = kwargs.pop("qe_token")
+        url = kwargs.pop("qe_url")
+        provider = IBMProvider(token, url)
+        hub, group, project = _get_custom_hgp()
+        kwargs.update(
+            {"provider": provider, "hub": hub, "group": group, "project": project}
+        )
+        return func(*args, **kwargs)
+
+    return _wrapper
+
+
+def requires_private_provider(func):
+    """Decorator that signals the test requires a hub/group/project for private jobs.
+
+    This decorator appends `provider`, `hub`, `group` and `project` arguments to the decorated
     function.
 
     Args:
@@ -122,49 +160,17 @@ def requires_provider(func):
     Returns:
         callable: the decorated function.
     """
+
     @wraps(func)
     @requires_qe_access
     def _wrapper(*args, **kwargs):
-        token = kwargs.pop('qe_token')
-        url = kwargs.pop('qe_url')
-        _enable_account(token, url)
-        provider = _get_custom_provider(token, url) or list(IBMProvider._providers.values())[0]
-        kwargs.update({'provider': provider})
-
-        return func(*args, **kwargs)
-
-    return _wrapper
-
-
-def requires_private_provider(func):
-    """Decorator that signals the test requires a provider for private jobs.
-
-    This decorator appends a `provider` argument to the decorated function.
-
-    Args:
-        func (callable): test function to be decorated.
-
-    Returns:
-        callable: the decorated function.
-    """
-    @wraps(func)
-    @requires_qe_access
-    def _wrapper(*args, **kwargs):
-        token = kwargs.pop('qe_token')
-        url = kwargs.pop('qe_url')
-        _enable_account(token, url)
-
-        # Get the private hub/group/project.
-        hgp = os.getenv('QISKIT_IBM_STAGING_PRIVATE_HGP', None) \
-            if os.getenv('QISKIT_IBM_USE_STAGING_CREDENTIALS', '') \
-            else os.getenv('QISKIT_IBM_PRIVATE_HGP', None)
-        if not hgp:
-            raise SkipTest('Requires private provider.')
-
-        hgp = hgp.split('/')
-        provider = IBMProvider(token=token, url=url, hub=hgp[0], group=hgp[1], project=hgp[2])
-        kwargs.update({'provider': provider})
-
+        token = kwargs.pop("qe_token")
+        url = kwargs.pop("qe_url")
+        provider = IBMProvider(token, url)
+        hub, group, project = _get_private_hgp()
+        kwargs.update(
+            {"provider": provider, "hub": hub, "group": group, "project": project}
+        )
         return func(*args, **kwargs)
 
     return _wrapper
@@ -189,18 +195,21 @@ def requires_device(func):
     Returns:
         callable: the decorated function.
     """
+
     @wraps(func)
     @requires_qe_access
     def _wrapper(obj, *args, **kwargs):
-
-        backend_name = os.getenv('QISKIT_IBM_STAGING_DEVICE', None) \
-            if os.getenv('QISKIT_IBM_USE_STAGING_CREDENTIALS', '') \
-            else os.getenv('QISKIT_IBM_DEVICE', None)
-
-        _backend = _get_backend(qe_token=kwargs.pop('qe_token'),
-                                qe_url=kwargs.pop('qe_url'),
-                                backend_name=backend_name)
-        kwargs.update({'backend': _backend})
+        backend_name = (
+            os.getenv("QISKIT_IBM_STAGING_DEVICE", None)
+            if os.getenv("QISKIT_IBM_USE_STAGING_CREDENTIALS", "")
+            else os.getenv("QISKIT_IBM_DEVICE", None)
+        )
+        _backend = _get_backend(
+            qe_token=kwargs.pop("qe_token"),
+            qe_url=kwargs.pop("qe_url"),
+            backend_name=backend_name,
+        )
+        kwargs.update({"backend": _backend})
         return func(obj, *args, **kwargs)
 
     return _wrapper
@@ -215,19 +224,23 @@ def requires_runtime_device(func):
     Returns:
         callable: the decorated function.
     """
+
     @wraps(func)
     @requires_qe_access
     def _wrapper(obj, *args, **kwargs):
-
-        backend_name = os.getenv('QISKIT_IBM_STAGING_RUNTIME_DEVICE', None) \
-            if os.getenv('QISKIT_IBM_USE_STAGING_CREDENTIALS', '') \
-            else os.getenv('QISKIT_IBM_RUNTIME_DEVICE', None)
+        backend_name = (
+            os.getenv("QISKIT_IBM_STAGING_RUNTIME_DEVICE", None)
+            if os.getenv("QISKIT_IBM_USE_STAGING_CREDENTIALS", "")
+            else os.getenv("QISKIT_IBM_RUNTIME_DEVICE", None)
+        )
         if not backend_name:
             raise SkipTest("Runtime device not specified")
-        _backend = _get_backend(qe_token=kwargs.pop('qe_token'),
-                                qe_url=kwargs.pop('qe_url'),
-                                backend_name=backend_name)
-        kwargs.update({'backend': _backend})
+        _backend = _get_backend(
+            qe_token=kwargs.pop("qe_token"),
+            qe_url=kwargs.pop("qe_url"),
+            backend_name=backend_name,
+        )
+        kwargs.update({"backend": _backend})
         return func(obj, *args, **kwargs)
 
     return _wrapper
@@ -235,26 +248,21 @@ def requires_runtime_device(func):
 
 def _get_backend(qe_token, qe_url, backend_name):
     """Get the specified backend."""
-    _enable_account(qe_token, qe_url)
-
+    provider = IBMProvider(qe_token, qe_url)
     _backend = None
-    provider = _get_custom_provider(qe_token, qe_url) or list(IBMProvider._providers.values())[0]
-
+    hub, group, project = _get_custom_hgp()
     if backend_name:
-        # Put desired provider as the first in the list.
-        providers = [provider] + IBMProvider._get_providers()
-        for provider in providers:
-            backends = provider.backends(name=backend_name)
-            if backends:
-                _backend = backends[0]
-                break
+        _backend = provider.get_backend(
+            name=backend_name, hub=hub, group=group, project=project
+        )
     else:
-        _backend = least_busy(provider.backends(
-            simulator=False, min_num_qubits=5))
-
+        _backend = least_busy(
+            provider.backends(
+                simulator=False, min_num_qubits=5, hub=hub, group=group, project=project
+            )
+        )
     if not _backend:
-        raise Exception('Unable to find a suitable backend.')
-
+        raise Exception("Unable to find a suitable backend.")
     return _backend
 
 
@@ -268,19 +276,17 @@ def _get_credentials():
         Exception: When the credential could not be set and they are needed
             for that set of options.
     """
-    if os.getenv('QISKIT_IBM_USE_STAGING_CREDENTIALS', ''):
+    if os.getenv("QISKIT_IBM_USE_STAGING_CREDENTIALS", ""):
         # Special case: instead of using the standard credentials mechanism,
         # load them from different environment variables. This assumes they
         # will always be in place, as is used by the CI setup.
         return Credentials(
-            token=os.getenv('QISKIT_IBM_STAGING_API_TOKEN'),
-            url=os.getenv('QISKIT_IBM_STAGING_API_URL'),
-            auth_url=os.getenv('QISKIT_IBM_STAGING_API_URL')
+            token=os.getenv("QISKIT_IBM_STAGING_API_TOKEN"),
+            url=os.getenv("QISKIT_IBM_STAGING_API_URL"),
+            auth_url=os.getenv("QISKIT_IBM_STAGING_API_URL"),
         )
-
     # Attempt to read the standard credentials.
     discovered_credentials, _ = discover_credentials()
-
     if discovered_credentials:
         # Decide which credentials to use for testing.
         if len(discovered_credentials) > 1:
@@ -289,38 +295,54 @@ def _get_credentials():
                 return discovered_credentials[(None, None, None)]
             except KeyError:
                 pass
-
         # Use the first available credentials.
         return list(discovered_credentials.values())[0]
+    raise Exception("Unable to locate valid credentials.")
 
-    raise Exception('Unable to locate valid credentials.')
 
+def _get_custom_hgp() -> Tuple[str, str, str]:
+    """Get a custom hub/group/project
 
-def _get_custom_provider(token: str, url: str) -> Optional[IBMProvider]:
-    """Find the provider for the specific hub/group/project, if any.
+    Gets the hub/group/project set in QISKIT_IBM_STAGING_HGP for staging env or
+        QISKIT_IBM_HGP for production env.
 
     Returns:
-        Custom provider or ``None`` if default is to be used.
+        Tuple of custom hub/group/project or ``None`` if not set.
     """
-    hgp = os.getenv('QISKIT_IBM_STAGING_HGP', None) \
-        if os.getenv('QISKIT_IBM_USE_STAGING_CREDENTIALS', '') \
-        else os.getenv('QISKIT_IBM_HGP', None)
+    hub = None
+    group = None
+    project = None
+    hgp = (
+        os.getenv("QISKIT_IBM_STAGING_HGP", None)
+        if os.getenv("QISKIT_IBM_USE_STAGING_CREDENTIALS", "")
+        else os.getenv("QISKIT_IBM_HGP", None)
+    )
     if hgp:
-        hgp = hgp.split('/')
-        return IBMProvider(token=token, url=url, hub=hgp[0], group=hgp[1], project=hgp[2])
-    return None  # No custom provider.
+        hub, group, project = hgp.split("/")
+    return hub, group, project
 
 
-def _enable_account(qe_token: str, qe_url: str) -> None:
-    """Enable the account if one is not already active.
+def _get_private_hgp() -> Tuple[str, str, str]:
+    """Get a private hub/group/project
 
-    Args:
-        qe_token: API token.
-        qe_url: API URL.
+    Gets the hub/group/project set in QISKIT_IBM_STAGING_PRIVATE_HGP for staging env or
+        QISKIT_IBM_PRIVATE_HGP for production env.
+
+    Returns:
+        Tuple of custom hub/group/project or ``None`` if not set.
+
+    Raises:
+        SkipTest: requires private provider
     """
-    active_account = IBMProvider.active_account()
-    if active_account:
-        if active_account.get('token', '') == qe_token:
-            return
-        IBMProvider._disable_account()
-    IBMProvider(qe_token, qe_url)
+    hub = None
+    group = None
+    project = None
+    hgp = (
+        os.getenv("QISKIT_IBM_STAGING_PRIVATE_HGP", None)
+        if os.getenv("QISKIT_IBM_USE_STAGING_CREDENTIALS", "")
+        else os.getenv("QISKIT_IBM_PRIVATE_HGP", None)
+    )
+    if not hgp:
+        raise SkipTest("Requires private provider.")
+    hub, group, project = hgp.split("/")
+    return hub, group, project

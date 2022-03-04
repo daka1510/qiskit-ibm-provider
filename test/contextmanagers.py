@@ -12,23 +12,22 @@
 
 """Context managers for using with IBM Provider unit tests."""
 
-from collections import OrderedDict
 import os
-from typing import Optional, Dict
 from contextlib import ContextDecorator, contextmanager
 from tempfile import NamedTemporaryFile
+from typing import Optional, Dict
 from unittest.mock import patch
 
-from qiskit_ibm.credentials import configrc, Credentials
-from qiskit_ibm.credentials.environ import VARIABLES_MAP
-from qiskit_ibm import IBMProvider
-from qiskit_ibm.credentials import HubGroupProject
+from qiskit_ibm_provider import IBMProvider
+from qiskit_ibm_provider.credentials import configrc, Credentials
+from qiskit_ibm_provider.credentials.environ import VARIABLES_MAP
 
 CREDENTIAL_ENV_VARS = VARIABLES_MAP.keys()
 
 
 class custom_envs(ContextDecorator):
     """Context manager that modifies environment variables."""
+
     # pylint: disable=invalid-name
 
     def __init__(self, new_environ):
@@ -52,6 +51,7 @@ class custom_envs(ContextDecorator):
 
 class no_envs(ContextDecorator):
     """Context manager that disables environment variables."""
+
     # pylint: disable=invalid-name
 
     def __init__(self, vars_to_remove):
@@ -65,8 +65,11 @@ class no_envs(ContextDecorator):
 
     def __enter__(self):
         # Remove the original variables from `os.environ`.
-        modified_environ = {key: value for key, value in os.environ.items()
-                            if key not in self.vars_to_remove}
+        modified_environ = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in self.vars_to_remove
+        }
         os.environ = modified_environ
 
     def __exit__(self, *exc):
@@ -75,9 +78,10 @@ class no_envs(ContextDecorator):
 
 class custom_qiskitrc(ContextDecorator):
     """Context manager that uses a temporary qiskitrc."""
+
     # pylint: disable=invalid-name
 
-    def __init__(self, contents=b''):
+    def __init__(self, contents=b""):
         # Create a temporary file with the contents.
         self.tmp_file = NamedTemporaryFile()
         self.tmp_file.write(contents)
@@ -97,13 +101,14 @@ class custom_qiskitrc(ContextDecorator):
 
 class no_file(ContextDecorator):
     """Context manager that disallows access to a file."""
+
     # pylint: disable=invalid-name
 
     def __init__(self, filename):
         self.filename = filename
         # Store the original `os.path.isfile` function, for mocking.
         self.isfile_original = os.path.isfile
-        self.patcher = patch('os.path.isfile', side_effect=self.side_effect)
+        self.patcher = patch("os.path.isfile", side_effect=self.side_effect)
 
     def __enter__(self):
         self.patcher.start()
@@ -118,51 +123,33 @@ class no_file(ContextDecorator):
         return self.isfile_original(filename_)
 
 
-class MockIBMProvider:
-    """Mock class for IBM Provider"""
-
-    @classmethod
-    def _mock_initialize_provider(
-            cls,
-            credentials: Credentials,
-            preferences: Optional[Dict] = None
-    ) -> None:
-        """Mock ``_initialize_provider()``, just storing the credentials."""
-        cls._providers = OrderedDict()
-        provider = dict()
-        provider['credentials'] = credentials
-        cls._providers[HubGroupProject('ibm-q', 'open', 'main')] = provider
-        if preferences:
-            credentials.preferences = preferences.get(credentials.unique_id(), {})
-
-    @classmethod
-    def _mock_get_provider(
-            cls,
-            token: Optional[str] = None,
-            url: Optional[str] = None,
-            hub: Optional[str] = None,
-            group: Optional[str] = None,
-            project: Optional[str] = None
-    ):
-        # pylint: disable=unused-argument
-        return cls._providers[HubGroupProject('ibm-q', 'open', 'main')]
+def _mock_initialize_hgps(
+    self, credentials: Credentials, preferences: Optional[Dict] = None
+) -> None:
+    """Mock ``_initialize_hgps()``, just storing the credentials."""
+    hgp = {"credentials": credentials}
+    self._hgp = hgp
+    self._hgps = {}
+    if preferences:
+        credentials.preferences = preferences.get(credentials.unique_id(), {})
 
 
 @contextmanager
 def mock_ibm_provider():
     """Mock the initialization of ``IBMProvider``, so it does not query the API."""
-    patcher = patch.object(IBMProvider, '_initialize_providers',
-                           side_effect=MockIBMProvider._mock_initialize_provider,
-                           autospec=True)
-    patcher2 = patch.object(IBMProvider, '_check_api_version',
-                            return_value={'new_api': True, 'api-auth': '0.1'})
-    patcher3 = patch.object(IBMProvider, '_get_provider',
-                            side_effect=MockIBMProvider._mock_get_provider,
-                            autospec=True)
+    patcher = patch.object(
+        IBMProvider,
+        "_initialize_hgps",
+        side_effect=_mock_initialize_hgps,
+        autospec=True,
+    )
+    patcher2 = patch.object(
+        IBMProvider,
+        "_check_api_version",
+        return_value={"new_api": True, "api-auth": "0.1"},
+    )
     patcher.start()
     patcher2.start()
-    patcher3.start()
     yield
-    patcher3.stop()
     patcher2.stop()
     patcher.stop()

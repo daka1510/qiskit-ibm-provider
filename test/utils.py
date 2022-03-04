@@ -12,19 +12,22 @@
 
 """General utility functions for testing."""
 
-import os
 import logging
+import os
+from typing import Optional
 
 from qiskit import QuantumCircuit
-from qiskit.qobj import QasmQobj
 from qiskit.compiler import assemble, transpile
-from qiskit.test.reference_circuits import ReferenceCircuits
-from qiskit.pulse import Schedule
 from qiskit.providers.exceptions import JobError
 from qiskit.providers.jobstatus import JobStatus
-from qiskit_ibm.ibm_provider import IBMProvider
-from qiskit_ibm.ibm_backend import IBMBackend
-from qiskit_ibm.job import IBMJob
+from qiskit.pulse import Schedule
+from qiskit.qobj import QasmQobj
+from qiskit.test.reference_circuits import ReferenceCircuits
+
+from qiskit_ibm_provider.hub_group_project import HubGroupProject
+from qiskit_ibm_provider.ibm_backend import IBMBackend
+from qiskit_ibm_provider.ibm_provider import IBMProvider
+from qiskit_ibm_provider.job import IBMJob
 
 
 def setup_test_logging(logger: logging.Logger, filename: str):
@@ -35,25 +38,31 @@ def setup_test_logging(logger: logging.Logger, filename: str):
         filename: Name of the output file, if log to file is enabled.
     """
     # Set up formatter.
-    log_fmt = ('{}.%(funcName)s:%(levelname)s:%(asctime)s:'
-               ' %(message)s'.format(logger.name))
+    log_fmt = "{}.%(funcName)s:%(levelname)s:%(asctime)s:" " %(message)s".format(
+        logger.name
+    )
     formatter = logging.Formatter(log_fmt)
 
-    if os.getenv('STREAM_LOG', 'true'):
+    if os.getenv("STREAM_LOG", "true"):
         # Set up the stream handler.
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(formatter)
         logger.addHandler(stream_handler)
 
-    if os.getenv('FILE_LOG', 'false'):
+    if os.getenv("FILE_LOG", "false"):
         file_handler = logging.FileHandler(filename)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
-    logger.setLevel(os.getenv('LOG_LEVEL', 'DEBUG'))
+    logger.setLevel(os.getenv("LOG_LEVEL", "DEBUG"))
 
 
-def most_busy_backend(provider: IBMProvider) -> IBMBackend:
+def most_busy_backend(
+    provider: IBMProvider,
+    hub: Optional[str] = None,
+    group: Optional[str] = None,
+    project: Optional[str] = None,
+) -> IBMBackend:
     """Return the most busy backend for the provider given.
 
     Return the most busy available backend for those that
@@ -62,13 +71,20 @@ def most_busy_backend(provider: IBMProvider) -> IBMBackend:
 
     Args:
         provider: IBM Quantum account provider.
+        hub: Name of the hub.
+        group: Name of the group.
+        project: Name of the project.
 
     Returns:
         The most busy backend.
     """
-    backends = provider.backends(simulator=False, operational=True)
-    return max([b for b in backends if b.configuration().n_qubits >= 5],
-               key=lambda b: b.status().pending_jobs)
+    backends = provider.backends(
+        simulator=False, operational=True, hub=hub, group=group, project=project
+    )
+    return max(
+        [b for b in backends if b.configuration().n_qubits >= 5],
+        key=lambda b: b.status().pending_jobs,
+    )
 
 
 def get_large_circuit(backend: IBMBackend) -> QuantumCircuit:
@@ -82,9 +98,9 @@ def get_large_circuit(backend: IBMBackend) -> QuantumCircuit:
     """
     n_qubits = min(backend.configuration().n_qubits, 20)
     circuit = QuantumCircuit(n_qubits, n_qubits)
-    for n in range(n_qubits-1):
-        circuit.h(n)
-        circuit.cx(n, n+1)
+    for num_qubits in range(n_qubits - 1):
+        circuit.h(num_qubits)
+        circuit.cx(num_qubits, num_qubits + 1)
     circuit.measure(list(range(n_qubits)), list(range(n_qubits)))
 
     return circuit
@@ -100,8 +116,11 @@ def bell_in_qobj(backend: IBMBackend, shots: int = 1024) -> QasmQobj:
     Returns:
         A bell circuit in Qobj format.
     """
-    return assemble(transpile(ReferenceCircuits.bell(), backend=backend),
-                    backend=backend, shots=shots)
+    return assemble(
+        transpile(ReferenceCircuits.bell(), backend=backend),
+        backend=backend,
+        shots=shots,
+    )
 
 
 def cancel_job(job: IBMJob, verify: bool = False) -> bool:
@@ -122,9 +141,10 @@ def cancel_job(job: IBMJob, verify: bool = False) -> bool:
             if cancelled:
                 if verify:
                     status = job.status()
-                    assert status is JobStatus.CANCELLED, \
-                        'cancel() was successful for job {} but its ' \
-                        'status is {}.'.format(job.job_id(), status)
+                    assert status is JobStatus.CANCELLED, (
+                        "cancel() was successful for job {} but its "
+                        "status is {}.".format(job.job_id(), status)
+                    )
                 break
         except JobError:
             pass
@@ -160,10 +180,10 @@ def submit_job_one_bad_instr(backend: IBMBackend) -> IBMJob:
     qc_new = transpile(ReferenceCircuits.bell(), backend)
     if backend.configuration().simulator:
         # Specify method so it doesn't fail at method selection.
-        qobj = assemble([qc_new]*2, backend=backend, method="statevector")
+        qobj = assemble([qc_new] * 2, backend=backend, method="statevector")
     else:
-        qobj = assemble([qc_new]*2, backend=backend)
-    qobj.experiments[1].instructions[1].name = 'bad_instruction'
+        qobj = assemble([qc_new] * 2, backend=backend)
+    qobj.experiments[1].instructions[1].name = "bad_instruction"
     job = backend._submit_job(qobj)
     return job
 
@@ -190,38 +210,34 @@ def get_pulse_schedule(backend: IBMBackend) -> Schedule:
     inst_map = defaults.instruction_schedule_map
 
     # Run 2 experiments - 1 with x pulse and 1 without
-    x = inst_map.get('x', 0)
-    measure = inst_map.get('measure', range(config.n_qubits)) << x.duration
+    x_pulse = inst_map.get("x", 0)
+    measure = inst_map.get("measure", range(config.n_qubits)) << x_pulse.duration
     ground_sched = measure
-    excited_sched = x | measure
+    excited_sched = x_pulse | measure
     schedules = [ground_sched, excited_sched]
     return schedules
 
 
-def get_provider(
-        qe_token: str,
-        qe_url: str,
-        default: bool = True
-) -> IBMProvider:
-    """Return a provider for the account.
+def get_hgp(qe_token: str, qe_url: str, default: bool = True) -> HubGroupProject:
+    """Return a HubGroupProject for the account.
 
     Args:
         qe_token: IBM Quantum token.
         qe_url: IBM Quantum auth URL.
-        default: If `True`, the default open access project provider is returned.
-            Otherwise, a non open access project provider is returned.
+        default: If `True`, the default open access hgp is returned.
+            Otherwise, a non open access hgp is returned.
 
     Returns:
-        A provider, as specified by `default`.
+        A HubGroupProject, as specified by `default`.
     """
-    provider_to_return = IBMProvider(qe_token, url=qe_url)  # Default provider.
+    provider = IBMProvider(qe_token, url=qe_url)  # Default hub/group/project.
+    open_hgp = provider._get_hgp()  # Open access hgp
+    hgp_to_return = open_hgp
     if not default:
-        # Get a non default provider (i.e.not the default open access project).
-        providers = IBMProvider.providers()
-        for provider in providers:
-            if provider != provider_to_return:
-                provider_to_return = provider
+        # Get a non default hgp (i.e. not the default open access hgp).
+        hgps = provider._get_hgps()
+        for hgp in hgps:
+            if hgp != open_hgp:
+                hgp_to_return = hgp
                 break
-    IBMProvider._disable_account()
-
-    return provider_to_return
+    return hgp_to_return
